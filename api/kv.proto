@@ -1,0 +1,167 @@
+// Package dynakv.v1 is the wire API of the key-value store.
+//
+// Errors use gRPC status codes: NotFound, Unavailable and InvalidArgument.
+// A request field r or w of 0 means the node default.
+syntax = "proto3";
+
+package dynakv.v1;
+
+option go_package = "github.com/abhi-8849/dynakv/api/kvpb";
+
+// ClockStamp is one node's slot in a vector clock.
+message ClockStamp {
+  // counter is how many writes this node has coordinated for the key.
+  uint64 counter = 1;
+  // ts is the unix time in nanoseconds of this node's last update; the oldest stamp is dropped when a clock grows past 10 entries.
+  int64 ts = 2;
+}
+
+// Version is one stored value together with its vector clock.
+message Version {
+  // value is the stored bytes, at most 1 MB; empty for a tombstone.
+  bytes value = 1;
+  // clock maps node id to that node's stamp; it orders this version against others.
+  map<string, ClockStamp> clock = 2;
+  // tombstone marks the key as deleted at this version.
+  bool tombstone = 3;
+  // ts is the unix time in nanoseconds when the coordinator accepted the write; compaction uses it to age tombstones.
+  int64 ts = 4;
+}
+
+// KV is the client-facing service; any node accepts any request and forwards it to the key's coordinator.
+service KV {
+  // Get returns every concurrent version (siblings) and one merged context; NotFound when no version exists or a tombstone dominates.
+  rpc Get(GetRequest) returns (GetResponse);
+  // Put stores a new version once W nodes ack.
+  rpc Put(PutRequest) returns (PutResponse);
+  // Delete writes a tombstone version through the normal write path.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+// GetRequest asks for the current versions of one key.
+message GetRequest {
+  // key identifies the entry, at most 256 bytes.
+  bytes key = 1;
+  // r is how many replicas must reply; 0 means the node default.
+  int32 r = 2;
+}
+
+// GetResponse carries every surviving version of the key.
+message GetResponse {
+  // versions are the concurrent versions that no other version dominates; more than one means siblings.
+  repeated Version versions = 1;
+  // context is the merged clock as an opaque token; pass it back on the next Put or Delete.
+  bytes context = 2;
+}
+
+// PutRequest writes a new version of one key.
+message PutRequest {
+  // key identifies the entry, at most 256 bytes.
+  bytes key = 1;
+  // value is the bytes to store, at most 1 MB.
+  bytes value = 2;
+  // context is the token from a previous Get; empty for a blind write, which may create a sibling.
+  bytes context = 3;
+  // w is how many replicas must ack; 0 means the node default.
+  int32 w = 4;
+}
+
+// PutResponse is empty; success is the gRPC OK status.
+message PutResponse {}
+
+// DeleteRequest deletes one key by writing a tombstone.
+message DeleteRequest {
+  // key identifies the entry, at most 256 bytes.
+  bytes key = 1;
+  // context is the token from a previous Get; the tombstone dominates the versions it covers.
+  bytes context = 2;
+  // w is how many replicas must ack; 0 means the node default.
+  int32 w = 3;
+}
+
+// DeleteResponse is empty; success is the gRPC OK status.
+message DeleteResponse {}
+
+// Replica is the node-to-node service the coordinator uses to reach the other replicas.
+service Replica {
+  // ReplicaPut stores a version on this node; hint_for is set when this node is a stand-in holding the write for a down node.
+  rpc ReplicaPut(ReplicaPutRequest) returns (Ack);
+  // ReplicaGet returns the versions this node holds for a key.
+  rpc ReplicaGet(ReplicaGetRequest) returns (ReplicaGetResponse);
+  // ReplayHint delivers a write held by a stand-in to the node it was meant for.
+  rpc ReplayHint(ReplayHintRequest) returns (Ack);
+}
+
+// ReplicaPutRequest asks a replica to store one version.
+message ReplicaPutRequest {
+  // key identifies the entry.
+  bytes key = 1;
+  // version is the value and clock to store; the replica drops stored versions it dominates.
+  Version version = 2;
+  // hint_for is the id of the down node the write belongs to; empty for a normal write.
+  string hint_for = 3;
+}
+
+// ReplicaGetRequest asks a replica for its local versions of one key.
+message ReplicaGetRequest {
+  // key identifies the entry.
+  bytes key = 1;
+}
+
+// ReplicaGetResponse carries the replica's local versions.
+message ReplicaGetResponse {
+  // versions are all versions the replica stores for the key; empty when it has none.
+  repeated Version versions = 1;
+}
+
+// ReplayHintRequest hands a held write back to its intended owner.
+message ReplayHintRequest {
+  // key identifies the entry.
+  bytes key = 1;
+  // version is the value and clock that was written while the owner was down.
+  Version version = 2;
+}
+
+// Ack is an empty reply meaning the replica applied the request.
+message Ack {}
+
+// Ring exposes cluster membership and key placement to clients and operators.
+service Ring {
+  // Status lists every member and whether it is alive.
+  rpc Status(StatusRequest) returns (StatusResponse);
+  // Owners returns the key's preference list.
+  rpc Owners(OwnersRequest) returns (OwnersResponse);
+}
+
+// Member is one node as seen through gossip.
+message Member {
+  // id is the node's unique name, used in vector clocks and hints.
+  string id = 1;
+  // addr is the node's gRPC host:port.
+  string addr = 2;
+  // zone is the failure domain the node belongs to; replicas are spread across zones.
+  string zone = 3;
+  // alive is false once gossip marks the node dead.
+  bool alive = 4;
+}
+
+// StatusRequest has no fields; it asks for the whole membership list.
+message StatusRequest {}
+
+// StatusResponse lists the cluster.
+message StatusResponse {
+  // members are all known nodes, alive or not.
+  repeated Member members = 1;
+}
+
+// OwnersRequest asks which nodes own one key.
+message OwnersRequest {
+  // key identifies the entry.
+  bytes key = 1;
+}
+
+// OwnersResponse is the key's preference list.
+message OwnersResponse {
+  // owners are the N distinct nodes in preference order; the first live one is the coordinator.
+  repeated Member owners = 1;
+}
