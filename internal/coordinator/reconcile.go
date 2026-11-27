@@ -1,11 +1,16 @@
 package coordinator
 
 import (
+	"bytes"
+	"cmp"
+	"slices"
+
 	"github.com/abhi-8849/dynakv/internal/storage"
 	"github.com/abhi-8849/dynakv/internal/vclock"
 )
 
-// reconcile drops versions that another version supersedes and collapses duplicates; what remains are the siblings.
+// reconcile drops versions that another version supersedes and collapses duplicates; what remains are the siblings, oldest first so
+// the order does not depend on which replica answered first.
 func reconcile(vs []storage.Versioned) []storage.Versioned {
 	var out []storage.Versioned
 next:
@@ -22,6 +27,9 @@ next:
 		}
 		out = append(out, v)
 	}
+	slices.SortFunc(out, func(a, b storage.Versioned) int {
+		return cmp.Or(a.TS.Compare(b.TS), bytes.Compare(a.Value, b.Value))
+	})
 	return out
 }
 
