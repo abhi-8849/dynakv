@@ -116,7 +116,7 @@ func newNode(f flags, log *slog.Logger) (*node, error) {
 
 // wire builds the coordinator and registers the gRPC services and the metrics endpoint.
 func (n *node) wire(f flags) error {
-	cfg := coordinator.Config{ID: f.id, N: f.n, R: f.r, W: f.w, Timeout: f.timeout}
+	cfg := coordinator.Config{ID: f.id, N: f.n, R: f.r, W: f.w, Timeout: f.timeout, Log: n.log}
 	coord, err := coordinator.New(cfg, n.store, wallClock{}, n.mem, n.peers)
 	if err != nil {
 		return err

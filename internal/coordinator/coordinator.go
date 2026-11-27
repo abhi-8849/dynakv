@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -47,6 +48,8 @@ type Config struct {
 	N, R, W int
 	// Timeout bounds how long a request waits for its replicas.
 	Timeout time.Duration
+	// Log receives read repair events; nil discards them.
+	Log *slog.Logger
 }
 
 // Coordinator serves reads and writes by fanning each request out to the key's N owners.
@@ -58,6 +61,7 @@ type Coordinator struct {
 	replicas Replicas
 	// seq is the highest counter this node has issued; counters never repeat even for concurrent writes to one key.
 	seq atomic.Uint64
+	log *slog.Logger
 }
 
 // New returns a coordinator over the node's local store.
@@ -65,7 +69,11 @@ func New(cfg Config, store storage.Engine, clock Clock, cluster Cluster, replica
 	if cfg.ID == "" || cfg.N < 1 || cfg.R < 1 || cfg.R > cfg.N || cfg.W < 1 || cfg.W > cfg.N || cfg.Timeout <= 0 {
 		return nil, fmt.Errorf("%w: id=%q n=%d r=%d w=%d timeout=%s", ErrInvalidConfig, cfg.ID, cfg.N, cfg.R, cfg.W, cfg.Timeout)
 	}
-	return &Coordinator{cfg: cfg, store: store, clock: clock, cluster: cluster, replicas: replicas}, nil
+	log := cfg.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Coordinator{cfg: cfg, store: store, clock: clock, cluster: cluster, replicas: replicas, log: log}, nil
 }
 
 // Get returns the live versions of key and the merged context to pass to the next write. r of 0 means the default.
@@ -85,6 +93,7 @@ func (c *Coordinator) Get(ctx context.Context, key []byte, r int) ([]storage.Ver
 		all = append(all, rep.val...)
 	}
 	vs := reconcile(all)
+	c.repairStale(ctx, key, vs, replies)
 	live := vs[:0:0]
 	for _, v := range vs {
 		if !v.Tombstone {
