@@ -15,6 +15,7 @@ import (
 type Client struct {
 	conn *grpc.ClientConn
 	kv   kvpb.KVClient
+	ring kvpb.RingClient
 }
 
 // Dial connects to the first seed. The connection is established on first use.
@@ -27,7 +28,7 @@ func Dial(_ context.Context, seeds []string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("client: dial %s: %w", seeds[0], err)
 	}
-	return &Client{conn: conn, kv: kvpb.NewKVClient(conn)}, nil
+	return &Client{conn: conn, kv: kvpb.NewKVClient(conn), ring: kvpb.NewRingClient(conn)}, nil
 }
 
 // Close releases the connection.

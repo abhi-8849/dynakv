@@ -1,4 +1,4 @@
-// Command dynakv-cli is the operator CLI: put, get and delete keys on a dynakv cluster.
+// Command dynakv-cli is the operator CLI: read and write keys and inspect the ring of a dynakv cluster.
 package main
 
 import (
@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/abhi-8849/dynakv/client"
@@ -69,7 +70,7 @@ func run(args []string, stdin io.Reader, out io.Writer) error {
 		return err
 	}
 	if len(pos) == 0 {
-		return errors.New("usage: dynakv-cli [-seeds host:port] [-r N] [-w N] [-ctx base64] put <key> <value|-> | get <key> | delete <key>")
+		return errors.New("usage: dynakv-cli [-seeds host:port] [-r N] [-w N] [-ctx base64] put <key> <value|-> | get <key> | delete <key> | owners <key> | status")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
@@ -85,6 +86,10 @@ func run(args []string, stdin io.Reader, out io.Writer) error {
 		return get(ctx, c, o, []byte(rest[0]), out)
 	case cmd == "delete" && len(rest) == 1:
 		return del(ctx, c, o, []byte(rest[0]), out)
+	case cmd == "owners" && len(rest) == 1:
+		return owners(ctx, c, []byte(rest[0]), out)
+	case cmd == "status" && len(rest) == 0:
+		return status(ctx, c, out)
 	}
 	return fmt.Errorf("unknown or incomplete command %q", strings.Join(pos, " "))
 }
@@ -132,4 +137,35 @@ func del(ctx context.Context, c *client.Client, o options, key []byte, out io.Wr
 	}
 	fmt.Fprintln(out, "OK")
 	return nil
+}
+
+// status prints every known node and whether it is alive.
+func status(ctx context.Context, c *client.Client, out io.Writer) error {
+	members, err := c.Status(ctx)
+	if err != nil {
+		return err
+	}
+	return printMembers(out, members)
+}
+
+// owners prints the key's preference list, the first live node being its coordinator.
+func owners(ctx context.Context, c *client.Client, key []byte, out io.Writer) error {
+	members, err := c.Owners(ctx, key)
+	if err != nil {
+		return err
+	}
+	return printMembers(out, members)
+}
+
+func printMembers(out io.Writer, members []client.Member) error {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tADDR\tZONE\tSTATE")
+	for _, m := range members {
+		state := "alive"
+		if !m.Alive {
+			state = "dead"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", m.ID, m.Addr, m.Zone, state)
+	}
+	return w.Flush()
 }
