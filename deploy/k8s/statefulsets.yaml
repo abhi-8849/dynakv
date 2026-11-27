@@ -1,0 +1,305 @@
+# StatefulSet for zone a: 2 pod(s) named dynakv-a-0 and dynakv-a-1. A StatefulSet gives each pod a stable name and its own volume.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  # Pods are named <this name>-<index>, which becomes the node id.
+  name: dynakv-a
+spec:
+  # The headless Service that provides the pods' DNS names.
+  serviceName: dynakv
+  # Number of nodes in this zone.
+  replicas: 2
+  # Start and stop pods together instead of one by one; nodes find each other through gossip, so order does not matter.
+  podManagementPolicy: Parallel
+  # How the StatefulSet finds its own pods.
+  selector:
+    matchLabels:
+      app: dynakv
+      zone: "a"
+  template:
+    metadata:
+      # Labels matched by the Services and by the selector above.
+      labels:
+        app: dynakv
+        zone: "a"
+    spec:
+      # Time to leave the gossip cluster and drain requests after SIGTERM.
+      terminationGracePeriodSeconds: 30
+      # Let the non-root user (65532) write to the mounted volume.
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: dynakv
+          # Image built by the Dockerfile; load it into kind with "kind load docker-image dynakv:local".
+          image: dynakv:local
+          # Never pull: the image only exists locally.
+          imagePullPolicy: IfNotPresent
+          # Node flags. $(POD_NAME) and $(POD_IP) are filled in by Kubernetes from the env section below.
+          args:
+            # Node id is the pod name, so it stays the same when the pod is recreated.
+            - "-id=$(POD_NAME)"
+            # Listen on the pod IP; peers and clients dial this address, which is advertised through gossip.
+            - "-addr=$(POD_IP):7000"
+            # Gossip port; memberlist advertises the pod IP itself.
+            - "-gossip-addr=:7946"
+            # Prometheus metrics port.
+            - "-metrics-addr=:9100"
+            # Failure domain of this StatefulSet.
+            - "-zone=a"
+            # Seeds: the first pod of zones a and b; a node joins if at least one answers.
+            - "-join=dynakv-a-0.dynakv:7946,dynakv-b-0.dynakv:7946"
+            # Durable storage engine, writing to the mounted volume.
+            - "-engine=lsm"
+            - "-data-dir=/data"
+          env:
+            # The pod's own name, from the Kubernetes API.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The pod's own IP address, from the Kubernetes API.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            # Named ports so Services and probes can refer to them by name.
+            - name: grpc
+              containerPort: 7000
+            - name: gossip
+              containerPort: 7946
+              protocol: TCP
+            - name: gossip-udp
+              containerPort: 7946
+              protocol: UDP
+            - name: metrics
+              containerPort: 9100
+          # Ready once the gRPC port accepts connections. There is no health endpoint, so a TCP check is used.
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+          # Restart the container if the gRPC port stops accepting connections.
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          # Where the volume below appears inside the container.
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  # One PersistentVolumeClaim per pod, kept when the pod is deleted so the replacement pod finds its data.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # Mounted read-write by a single node at a time.
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# StatefulSet for zone b: 2 pod(s) named dynakv-b-0 and dynakv-b-1. A StatefulSet gives each pod a stable name and its own volume.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  # Pods are named <this name>-<index>, which becomes the node id.
+  name: dynakv-b
+spec:
+  # The headless Service that provides the pods' DNS names.
+  serviceName: dynakv
+  # Number of nodes in this zone.
+  replicas: 2
+  # Start and stop pods together instead of one by one; nodes find each other through gossip, so order does not matter.
+  podManagementPolicy: Parallel
+  # How the StatefulSet finds its own pods.
+  selector:
+    matchLabels:
+      app: dynakv
+      zone: "b"
+  template:
+    metadata:
+      # Labels matched by the Services and by the selector above.
+      labels:
+        app: dynakv
+        zone: "b"
+    spec:
+      # Time to leave the gossip cluster and drain requests after SIGTERM.
+      terminationGracePeriodSeconds: 30
+      # Let the non-root user (65532) write to the mounted volume.
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: dynakv
+          # Image built by the Dockerfile; load it into kind with "kind load docker-image dynakv:local".
+          image: dynakv:local
+          # Never pull: the image only exists locally.
+          imagePullPolicy: IfNotPresent
+          # Node flags. $(POD_NAME) and $(POD_IP) are filled in by Kubernetes from the env section below.
+          args:
+            # Node id is the pod name, so it stays the same when the pod is recreated.
+            - "-id=$(POD_NAME)"
+            # Listen on the pod IP; peers and clients dial this address, which is advertised through gossip.
+            - "-addr=$(POD_IP):7000"
+            # Gossip port; memberlist advertises the pod IP itself.
+            - "-gossip-addr=:7946"
+            # Prometheus metrics port.
+            - "-metrics-addr=:9100"
+            # Failure domain of this StatefulSet.
+            - "-zone=b"
+            # Seeds: the first pod of zones a and b; a node joins if at least one answers.
+            - "-join=dynakv-a-0.dynakv:7946,dynakv-b-0.dynakv:7946"
+            # Durable storage engine, writing to the mounted volume.
+            - "-engine=lsm"
+            - "-data-dir=/data"
+          env:
+            # The pod's own name, from the Kubernetes API.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The pod's own IP address, from the Kubernetes API.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            # Named ports so Services and probes can refer to them by name.
+            - name: grpc
+              containerPort: 7000
+            - name: gossip
+              containerPort: 7946
+              protocol: TCP
+            - name: gossip-udp
+              containerPort: 7946
+              protocol: UDP
+            - name: metrics
+              containerPort: 9100
+          # Ready once the gRPC port accepts connections. There is no health endpoint, so a TCP check is used.
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+          # Restart the container if the gRPC port stops accepting connections.
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          # Where the volume below appears inside the container.
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  # One PersistentVolumeClaim per pod, kept when the pod is deleted so the replacement pod finds its data.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # Mounted read-write by a single node at a time.
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# StatefulSet for zone c: 1 pod(s) named dynakv-c-0. A StatefulSet gives each pod a stable name and its own volume.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  # Pods are named <this name>-<index>, which becomes the node id.
+  name: dynakv-c
+spec:
+  # The headless Service that provides the pods' DNS names.
+  serviceName: dynakv
+  # Number of nodes in this zone.
+  replicas: 1
+  # Start and stop pods together instead of one by one; nodes find each other through gossip, so order does not matter.
+  podManagementPolicy: Parallel
+  # How the StatefulSet finds its own pods.
+  selector:
+    matchLabels:
+      app: dynakv
+      zone: "c"
+  template:
+    metadata:
+      # Labels matched by the Services and by the selector above.
+      labels:
+        app: dynakv
+        zone: "c"
+    spec:
+      # Time to leave the gossip cluster and drain requests after SIGTERM.
+      terminationGracePeriodSeconds: 30
+      # Let the non-root user (65532) write to the mounted volume.
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: dynakv
+          # Image built by the Dockerfile; load it into kind with "kind load docker-image dynakv:local".
+          image: dynakv:local
+          # Never pull: the image only exists locally.
+          imagePullPolicy: IfNotPresent
+          # Node flags. $(POD_NAME) and $(POD_IP) are filled in by Kubernetes from the env section below.
+          args:
+            # Node id is the pod name, so it stays the same when the pod is recreated.
+            - "-id=$(POD_NAME)"
+            # Listen on the pod IP; peers and clients dial this address, which is advertised through gossip.
+            - "-addr=$(POD_IP):7000"
+            # Gossip port; memberlist advertises the pod IP itself.
+            - "-gossip-addr=:7946"
+            # Prometheus metrics port.
+            - "-metrics-addr=:9100"
+            # Failure domain of this StatefulSet.
+            - "-zone=c"
+            # Seeds: the first pod of zones a and b; a node joins if at least one answers.
+            - "-join=dynakv-a-0.dynakv:7946,dynakv-b-0.dynakv:7946"
+            # Durable storage engine, writing to the mounted volume.
+            - "-engine=lsm"
+            - "-data-dir=/data"
+          env:
+            # The pod's own name, from the Kubernetes API.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The pod's own IP address, from the Kubernetes API.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            # Named ports so Services and probes can refer to them by name.
+            - name: grpc
+              containerPort: 7000
+            - name: gossip
+              containerPort: 7946
+              protocol: TCP
+            - name: gossip-udp
+              containerPort: 7946
+              protocol: UDP
+            - name: metrics
+              containerPort: 9100
+          # Ready once the gRPC port accepts connections. There is no health endpoint, so a TCP check is used.
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+          # Restart the container if the gRPC port stops accepting connections.
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          # Where the volume below appears inside the container.
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  # One PersistentVolumeClaim per pod, kept when the pod is deleted so the replacement pod finds its data.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        # Mounted read-write by a single node at a time.
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

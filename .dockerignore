@@ -1,0 +1,9 @@
+# Version control history is not needed to build.
+.git
+# Local node data must not be baked into the image.
+data
+# Local notes and editor files.
+CLAUDE.md
+.DS_Store
+# Deployment files are not needed inside the image.
+deploy

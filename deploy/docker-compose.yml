@@ -1,0 +1,59 @@
+# Local five-node cluster: zones a, a, b, b, c, each node with its own volume, all joining through node1.
+name: dynakv
+
+# Settings shared by all five nodes, written once with a YAML anchor.
+x-node: &node
+  # Build the image from the repository root using the Dockerfile in deploy/.
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: dynakv:local
+  # Restart a node that exits so a crash does not leave the cluster short.
+  restart: unless-stopped
+
+services:
+  node1:
+    <<: *node
+    # -addr uses the service name, which Docker DNS resolves, so other nodes can dial this node's gRPC port.
+    command: ["-id=node1", "-addr=node1:7000", "-gossip-addr=:7946", "-metrics-addr=:9100", "-zone=a", "-join=node1:7946", "-engine=lsm", "-data-dir=/data"]
+    # Named volume that keeps the node's SSTables and WAL across container restarts.
+    volumes: ["node1-data:/data"]
+    # Prometheus metrics on host port 9101.
+    ports: ["9101:9100"]
+
+  node2:
+    <<: *node
+    command: ["-id=node2", "-addr=node2:7000", "-gossip-addr=:7946", "-metrics-addr=:9100", "-zone=a", "-join=node1:7946", "-engine=lsm", "-data-dir=/data"]
+    volumes: ["node2-data:/data"]
+    ports: ["9102:9100"]
+    # Start after node1 so the seed is up when this node joins.
+    depends_on: [node1]
+
+  node3:
+    <<: *node
+    command: ["-id=node3", "-addr=node3:7000", "-gossip-addr=:7946", "-metrics-addr=:9100", "-zone=b", "-join=node1:7946", "-engine=lsm", "-data-dir=/data"]
+    volumes: ["node3-data:/data"]
+    ports: ["9103:9100"]
+    depends_on: [node1]
+
+  node4:
+    <<: *node
+    command: ["-id=node4", "-addr=node4:7000", "-gossip-addr=:7946", "-metrics-addr=:9100", "-zone=b", "-join=node1:7946", "-engine=lsm", "-data-dir=/data"]
+    volumes: ["node4-data:/data"]
+    ports: ["9104:9100"]
+    depends_on: [node1]
+
+  node5:
+    <<: *node
+    command: ["-id=node5", "-addr=node5:7000", "-gossip-addr=:7946", "-metrics-addr=:9100", "-zone=c", "-join=node1:7946", "-engine=lsm", "-data-dir=/data"]
+    volumes: ["node5-data:/data"]
+    ports: ["9105:9100"]
+    depends_on: [node1]
+
+# One named volume per node, managed by Docker.
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+  node5-data:
