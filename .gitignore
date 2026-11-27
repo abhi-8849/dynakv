@@ -32,3 +32,17 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# macOS
+.DS_Store
+
+# Binaries built from cmd/
+/dynakv
+/dynakv-cli
+/bin/
+
+# Node data directory (-data-dir default)
+/data/
+
+# Output of the Docker acknowledged-writes check
+acked.txt
