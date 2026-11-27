@@ -19,6 +19,7 @@ import (
 
 	"github.com/abhi-8849/dynakv/api/kvpb"
 	"github.com/abhi-8849/dynakv/internal/coordinator"
+	"github.com/abhi-8849/dynakv/internal/hints"
 	"github.com/abhi-8849/dynakv/internal/membership"
 	"github.com/abhi-8849/dynakv/internal/metrics"
 	"github.com/abhi-8849/dynakv/internal/ring"
@@ -29,6 +30,9 @@ import (
 // shutdownTimeout bounds how long leaving gossip and closing the metrics listener may take.
 const shutdownTimeout = 5 * time.Second
 
+// replayInterval is how often hints are expired and offered back to nodes that returned.
+const replayInterval = time.Second
+
 type wallClock struct{}
 
 func (wallClock) Now() time.Time { return time.Now() }
@@ -36,7 +40,7 @@ func (wallClock) Now() time.Time { return time.Now() }
 type flags struct {
 	id, addr, gossipAddr, metricsAddr, zone, join string
 	vnodes, n, r, w                               int
-	timeout                                       time.Duration
+	timeout, hintTTL                              time.Duration
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -51,6 +55,7 @@ func parseFlags(args []string) (flags, error) {
 	fs.StringVar(&f.zone, "zone", "default", "failure domain of this node")
 	fs.IntVar(&f.vnodes, "vnodes", ring.DefaultVnodes, "virtual nodes per node on the ring")
 	fs.DurationVar(&f.timeout, "timeout", 100*time.Millisecond, "how long a request waits for its replicas")
+	fs.DurationVar(&f.hintTTL, "hint-ttl", 3*time.Hour, "how long a node keeps a write for a down node before dropping it")
 	fs.IntVar(&f.n, "n", ring.DefaultReplicas, "replication factor")
 	fs.IntVar(&f.r, "r", 2, "default read quorum")
 	fs.IntVar(&f.w, "w", 2, "default write quorum")
@@ -80,6 +85,7 @@ type node struct {
 	store      storage.Engine
 	mem        *membership.Membership
 	peers      *server.Peers
+	replayer   *hints.Replayer
 	grpcSrv    *grpc.Server
 	grpcLis    net.Listener
 	metricsSrv *http.Server
@@ -117,14 +123,16 @@ func newNode(f flags, log *slog.Logger) (*node, error) {
 // wire builds the coordinator and registers the gRPC services and the metrics endpoint.
 func (n *node) wire(f flags) error {
 	cfg := coordinator.Config{ID: f.id, N: f.n, R: f.r, W: f.w, Timeout: f.timeout, Log: n.log}
-	coord, err := coordinator.New(cfg, n.store, wallClock{}, n.mem, n.peers)
+	spool := hints.New(n.store, wallClock{}, f.hintTTL, n.log)
+	coord, err := coordinator.New(cfg, coordinator.Deps{Store: n.store, Clock: wallClock{}, Cluster: n.mem, Replicas: n.peers, Hints: spool})
 	if err != nil {
 		return err
 	}
+	n.replayer = &hints.Replayer{Spool: spool, Cluster: n.mem, Sender: n.peers, Self: f.id, Interval: replayInterval, Log: n.log}
 	m := metrics.New()
 	n.grpcSrv = grpc.NewServer(grpc.ChainUnaryInterceptor(server.Instrument(m)))
 	kvpb.RegisterKVServer(n.grpcSrv, server.NewKV(server.NewForwarder(coord, f.id, f.n, n.mem, n.peers)))
-	kvpb.RegisterReplicaServer(n.grpcSrv, server.NewReplica(n.store))
+	kvpb.RegisterReplicaServer(n.grpcSrv, server.NewReplica(n.store, spool))
 	kvpb.RegisterRingServer(n.grpcSrv, server.NewRing(n.mem, f.n))
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.Handler())
@@ -152,6 +160,11 @@ func (n *node) run(ctx context.Context) error {
 	// after GracefulStop (nil) or on failure, and the HTTP server returns http.ErrServerClosed after Shutdown. errc is buffered for
 	// both so a sender never blocks. It is never closed; run reads both results before returning.
 	errc := make(chan error, 2)
+	// The replayer goroutine is started here and stopped by cancelling replayCtx; it closes replayed when Run returns, and run waits
+	// on it before returning. It exchanges no values.
+	replayCtx, stopReplay := context.WithCancel(ctx)
+	replayed := make(chan struct{})
+	go func() { defer close(replayed); n.replayer.Run(replayCtx) }()
 	go func() { errc <- n.grpcSrv.Serve(n.grpcLis) }()
 	go func() { errc <- n.metricsSrv.Serve(n.metricsLis) }()
 
@@ -163,6 +176,8 @@ func (n *node) run(ctx context.Context) error {
 		received++
 	}
 	n.log.Info("node stopping")
+	stopReplay()
+	<-replayed // wait until the replayer finished its pass
 	if err := n.mem.Leave(shutdownTimeout); err != nil {
 		n.log.Warn("leave gossip", "err", err)
 	}

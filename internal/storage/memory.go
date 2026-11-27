@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/abhi-8849/dynakv/internal/vclock"
@@ -46,6 +48,38 @@ func (m *Memory) Get(_ context.Context, key []byte) ([]Versioned, error) {
 		return nil, ErrNotFound
 	}
 	return vs, nil
+}
+
+// Scan implements Engine. fn runs without the lock held, so it may call Put and Remove.
+func (m *Memory) Scan(ctx context.Context, prefix []byte, fn func(key []byte, vs []Versioned) error) error {
+	m.mu.RLock()
+	snap := map[string][]Versioned{}
+	keys := []string{}
+	for k, vs := range m.data {
+		if bytes.HasPrefix([]byte(k), prefix) {
+			snap[k] = vs
+			keys = append(keys, k)
+		}
+	}
+	m.mu.RUnlock()
+	sort.Strings(keys)
+	for _, k := range keys {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn([]byte(k), snap[k]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Remove implements Engine.
+func (m *Memory) Remove(_ context.Context, key []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, string(key))
+	return nil
 }
 
 // Close implements Engine.

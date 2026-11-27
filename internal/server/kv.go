@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/abhi-8849/dynakv/api/kvpb"
 	"github.com/abhi-8849/dynakv/internal/coordinator"
+	"github.com/abhi-8849/dynakv/internal/hints"
 	"github.com/abhi-8849/dynakv/internal/storage"
 )
 
@@ -77,6 +79,8 @@ func validate(key, value []byte, quorum int32) error {
 	switch {
 	case len(key) == 0 || len(key) > MaxKeyBytes:
 		return status.Errorf(codes.InvalidArgument, "key must be 1 to %d bytes", MaxKeyBytes)
+	case bytes.HasPrefix(key, []byte(hints.Prefix)):
+		return status.Error(codes.InvalidArgument, "key uses a reserved prefix")
 	case len(value) > MaxValueBytes:
 		return status.Errorf(codes.InvalidArgument, "value must be at most %d bytes", MaxValueBytes)
 	case quorum < 0:

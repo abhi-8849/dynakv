@@ -19,7 +19,7 @@ func (c *Coordinator) repairStale(ctx context.Context, key []byte, merged []stor
 	var fixes []fix
 	for _, rep := range replies {
 		if missing := missingFrom(merged, rep.val); len(missing) > 0 {
-			fixes = append(fixes, fix{rep.node, missing})
+			fixes = append(fixes, fix{rep.target.Node, missing})
 		}
 	}
 	if len(fixes) == 0 {

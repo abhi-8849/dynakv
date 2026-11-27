@@ -29,6 +29,10 @@ type Engine interface {
 	Put(ctx context.Context, key []byte, v Versioned) error
 	// Get returns the versions of key, or ErrNotFound.
 	Get(ctx context.Context, key []byte) ([]Versioned, error)
+	// Scan calls fn for each key with the given prefix in byte order; it exists for the hint prefix only.
+	Scan(ctx context.Context, prefix []byte, fn func(key []byte, vs []Versioned) error) error
+	// Remove deletes key and all its versions; it exists for replayed and expired hints only.
+	Remove(ctx context.Context, key []byte) error
 	// Close releases the engine's resources.
 	Close() error
 }

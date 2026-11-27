@@ -45,13 +45,23 @@ func (p *Peers) kv(addr string) (kvpb.KVClient, error) {
 	return kvpb.NewKVClient(c), nil
 }
 
-// Put stores v on peer to through its Replica service.
-func (p *Peers) Put(ctx context.Context, to ring.Node, key []byte, v storage.Versioned) error {
+// Put stores v on peer to through its Replica service; a non-empty hintFor makes the peer keep it as a hint for that node.
+func (p *Peers) Put(ctx context.Context, to ring.Node, key []byte, v storage.Versioned, hintFor string) error {
 	c, err := p.conn(to.Addr)
 	if err != nil {
 		return err
 	}
-	_, err = kvpb.NewReplicaClient(c).ReplicaPut(ctx, &kvpb.ReplicaPutRequest{Key: key, Version: storage.ToProto(v)})
+	_, err = kvpb.NewReplicaClient(c).ReplicaPut(ctx, &kvpb.ReplicaPutRequest{Key: key, Version: storage.ToProto(v), HintFor: hintFor})
+	return err
+}
+
+// ReplayHint delivers a held write to the node it was meant for.
+func (p *Peers) ReplayHint(ctx context.Context, to ring.Node, key []byte, v storage.Versioned) error {
+	c, err := p.conn(to.Addr)
+	if err != nil {
+		return err
+	}
+	_, err = kvpb.NewReplicaClient(c).ReplayHint(ctx, &kvpb.ReplayHintRequest{Key: key, Version: storage.ToProto(v)})
 	return err
 }
 

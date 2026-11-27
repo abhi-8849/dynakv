@@ -82,3 +82,22 @@ func (r *Ring) PreferenceList(key []byte, n int) []Node {
 	picked = append(picked, held...)
 	return picked[:min(n, len(picked))]
 }
+
+// Walk returns every node once, in clockwise order from key's position. Hinted handoff uses it to pick stand-ins past the preference
+// list.
+func (r *Ring) Walk(key []byte) []Node {
+	if len(r.vnodes) == 0 {
+		return nil
+	}
+	start, _ := slices.BinarySearchFunc(r.vnodes, xxhash.Sum64(key), func(v vnode, h uint64) int { return cmp.Compare(v.hash, h) })
+	seen := make(map[int]struct{}, len(r.nodes))
+	out := make([]Node, 0, len(r.nodes))
+	for i := 0; i < len(r.vnodes) && len(out) < len(r.nodes); i++ {
+		idx := r.vnodes[(start+i)%len(r.vnodes)].node
+		if _, ok := seen[idx]; !ok {
+			seen[idx] = struct{}{}
+			out = append(out, r.nodes[idx])
+		}
+	}
+	return out
+}
