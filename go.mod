@@ -3,6 +3,7 @@ module github.com/abhi-8849/dynakv
 go 1.27
 
 require (
+	github.com/cespare/xxhash/v2 v2.3.0
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 )
