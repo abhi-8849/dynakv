@@ -36,3 +36,19 @@ type Engine interface {
 	// Close releases the engine's resources.
 	Close() error
 }
+
+// Merge returns cur with v applied: versions v supersedes are dropped and v is appended. changed is false when a stored version
+// already covers v, so replays and duplicate writes leave the key untouched. cur is not modified.
+func Merge(cur []Versioned, v Versioned) (next []Versioned, changed bool) {
+	next = make([]Versioned, 0, len(cur)+1)
+	for _, e := range cur {
+		switch v.Clock.Compare(e.Clock) {
+		case vclock.Before, vclock.Equal:
+			return cur, false
+		case vclock.After:
+			continue
+		}
+		next = append(next, e)
+	}
+	return append(next, v), true
+}

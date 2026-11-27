@@ -20,6 +20,7 @@ import (
 	"github.com/abhi-8849/dynakv/api/kvpb"
 	"github.com/abhi-8849/dynakv/internal/coordinator"
 	"github.com/abhi-8849/dynakv/internal/hints"
+	"github.com/abhi-8849/dynakv/internal/lsm"
 	"github.com/abhi-8849/dynakv/internal/membership"
 	"github.com/abhi-8849/dynakv/internal/metrics"
 	"github.com/abhi-8849/dynakv/internal/ring"
@@ -39,8 +40,10 @@ func (wallClock) Now() time.Time { return time.Now() }
 
 type flags struct {
 	id, addr, gossipAddr, metricsAddr, zone, join string
+	engine, dataDir                               string
+	memtableSize                                  byteSize
 	vnodes, n, r, w                               int
-	timeout, hintTTL                              time.Duration
+	timeout, hintTTL, tombstoneGrace              time.Duration
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -56,6 +59,11 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.vnodes, "vnodes", ring.DefaultVnodes, "virtual nodes per node on the ring")
 	fs.DurationVar(&f.timeout, "timeout", 100*time.Millisecond, "how long a request waits for its replicas")
 	fs.DurationVar(&f.hintTTL, "hint-ttl", 3*time.Hour, "how long a node keeps a write for a down node before dropping it")
+	fs.StringVar(&f.engine, "engine", "memory", "storage engine: memory or lsm")
+	fs.StringVar(&f.dataDir, "data-dir", "./data", "directory for the lsm engine's files")
+	f.memtableSize = 64 << 20
+	fs.Var(&f.memtableSize, "memtable-size", "bytes held in memory before the lsm engine flushes an SSTable, for example 64MB")
+	fs.DurationVar(&f.tombstoneGrace, "tombstone-grace", 240*time.Hour, "how long compaction keeps a delete marker")
 	fs.IntVar(&f.n, "n", ring.DefaultReplicas, "replication factor")
 	fs.IntVar(&f.r, "r", 2, "default read quorum")
 	fs.IntVar(&f.w, "w", 2, "default write quorum")
@@ -94,8 +102,11 @@ type node struct {
 
 // newNode opens the listeners, joins the cluster and wires the services. Nothing is served until run.
 func newNode(f flags, log *slog.Logger) (*node, error) {
-	n := &node{log: log, store: storage.NewMemory(), peers: server.NewPeers()}
-	var err error
+	store, err := openStore(f, log)
+	if err != nil {
+		return nil, err
+	}
+	n := &node{log: log, store: store, peers: server.NewPeers()}
 	if n.grpcLis, err = net.Listen("tcp", f.addr); err != nil {
 		return nil, fmt.Errorf("listen %s: %w", f.addr, err)
 	}
@@ -138,6 +149,17 @@ func (n *node) wire(f flags) error {
 	mux.Handle("/metrics", m.Handler())
 	n.metricsSrv = &http.Server{Handler: mux, ReadHeaderTimeout: shutdownTimeout}
 	return nil
+}
+
+// openStore opens the storage engine named by -engine.
+func openStore(f flags, log *slog.Logger) (storage.Engine, error) {
+	switch f.engine {
+	case "memory":
+		return storage.NewMemory(), nil
+	case "lsm":
+		return lsm.Open(lsm.Options{Dir: f.dataDir, MemtableSize: int64(f.memtableSize), TombstoneGrace: f.tombstoneGrace, Clock: wallClock{}, Log: log})
+	}
+	return nil, fmt.Errorf("unknown -engine %q", f.engine)
 }
 
 // advertise returns the gRPC address peers should dial; an empty or wildcard host becomes localhost.

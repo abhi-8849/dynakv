@@ -5,8 +5,6 @@ import (
 	"context"
 	"sort"
 	"sync"
-
-	"github.com/abhi-8849/dynakv/internal/vclock"
 )
 
 // Memory is an Engine that keeps everything in RAM and loses it on exit.
@@ -24,18 +22,10 @@ func NewMemory() *Memory {
 func (m *Memory) Put(_ context.Context, key []byte, v Versioned) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cur := m.data[string(key)]
-	kept := make([]Versioned, 0, len(cur)+1) // a fresh slice keeps slices already handed to readers unchanged
-	for _, e := range cur {
-		switch v.Clock.Compare(e.Clock) {
-		case vclock.Before, vclock.Equal:
-			return nil // v is stale or a duplicate
-		case vclock.After:
-			continue // v supersedes e
-		}
-		kept = append(kept, e)
+	// Merge builds a fresh slice, so slices already handed to readers stay unchanged.
+	if next, changed := Merge(m.data[string(key)], v); changed {
+		m.data[string(key)] = next
 	}
-	m.data[string(key)] = append(kept, v)
 	return nil
 }
 
