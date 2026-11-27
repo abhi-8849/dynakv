@@ -36,6 +36,7 @@ func (wallClock) Now() time.Time { return time.Now() }
 type flags struct {
 	id, addr, gossipAddr, metricsAddr, zone, join string
 	vnodes, n, r, w                               int
+	timeout                                       time.Duration
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -48,8 +49,9 @@ func parseFlags(args []string) (flags, error) {
 	fs.StringVar(&f.metricsAddr, "metrics-addr", ":9100", "Prometheus /metrics listen address")
 	fs.StringVar(&f.join, "join", "", "comma-separated gossip addresses of existing members; empty for the first node")
 	fs.StringVar(&f.zone, "zone", "default", "failure domain of this node")
-	fs.IntVar(&f.vnodes, "vnodes", 256, "virtual nodes per node on the ring")
-	fs.IntVar(&f.n, "n", 3, "replication factor")
+	fs.IntVar(&f.vnodes, "vnodes", ring.DefaultVnodes, "virtual nodes per node on the ring")
+	fs.DurationVar(&f.timeout, "timeout", 100*time.Millisecond, "how long a request waits for its replicas")
+	fs.IntVar(&f.n, "n", ring.DefaultReplicas, "replication factor")
 	fs.IntVar(&f.r, "r", 2, "default read quorum")
 	fs.IntVar(&f.w, "w", 2, "default write quorum")
 	return f, fs.Parse(args)
@@ -77,6 +79,7 @@ type node struct {
 	log        *slog.Logger
 	store      storage.Engine
 	mem        *membership.Membership
+	peers      *server.Peers
 	grpcSrv    *grpc.Server
 	grpcLis    net.Listener
 	metricsSrv *http.Server
@@ -85,16 +88,8 @@ type node struct {
 
 // newNode opens the listeners, joins the cluster and wires the services. Nothing is served until run.
 func newNode(f flags, log *slog.Logger) (*node, error) {
-	store := storage.NewMemory()
-	coord, err := coordinator.New(coordinator.Config{ID: f.id, N: f.n, R: f.r, W: f.w}, store, wallClock{})
-	if err != nil {
-		return nil, err
-	}
-	m := metrics.New()
-	n := &node{log: log, store: store, grpcSrv: grpc.NewServer(grpc.ChainUnaryInterceptor(server.Instrument(m)))}
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", m.Handler())
-	n.metricsSrv = &http.Server{Handler: mux, ReadHeaderTimeout: shutdownTimeout}
+	n := &node{log: log, store: storage.NewMemory(), peers: server.NewPeers()}
+	var err error
 	if n.grpcLis, err = net.Listen("tcp", f.addr); err != nil {
 		return nil, fmt.Errorf("listen %s: %w", f.addr, err)
 	}
@@ -112,10 +107,29 @@ func newNode(f flags, log *slog.Logger) (*node, error) {
 	if err != nil {
 		return nil, err
 	}
-	kvpb.RegisterKVServer(n.grpcSrv, server.NewKV(coord))
-	kvpb.RegisterRingServer(n.grpcSrv, server.NewRing(n.mem, f.n))
+	if err := n.wire(f); err != nil {
+		return nil, err
+	}
 	log.Info("node started", "id", f.id, "addr", f.addr, "gossip_addr", f.gossipAddr, "zone", f.zone)
 	return n, nil
+}
+
+// wire builds the coordinator and registers the gRPC services and the metrics endpoint.
+func (n *node) wire(f flags) error {
+	cfg := coordinator.Config{ID: f.id, N: f.n, R: f.r, W: f.w, Timeout: f.timeout}
+	coord, err := coordinator.New(cfg, n.store, wallClock{}, n.mem, n.peers)
+	if err != nil {
+		return err
+	}
+	m := metrics.New()
+	n.grpcSrv = grpc.NewServer(grpc.ChainUnaryInterceptor(server.Instrument(m)))
+	kvpb.RegisterKVServer(n.grpcSrv, server.NewKV(server.NewForwarder(coord, f.id, f.n, n.mem, n.peers)))
+	kvpb.RegisterReplicaServer(n.grpcSrv, server.NewReplica(n.store))
+	kvpb.RegisterRingServer(n.grpcSrv, server.NewRing(n.mem, f.n))
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", m.Handler())
+	n.metricsSrv = &http.Server{Handler: mux, ReadHeaderTimeout: shutdownTimeout}
+	return nil
 }
 
 // advertise returns the gRPC address peers should dial; an empty or wildcard host becomes localhost.
@@ -133,6 +147,7 @@ func advertise(addr string) string {
 // run serves until ctx is cancelled or a server fails, then leaves the cluster and drains.
 func (n *node) run(ctx context.Context) error {
 	defer n.store.Close()
+	defer n.peers.Close()
 	// run starts both serve goroutines and receives their results. Each sends exactly once when its server stops: Serve returns
 	// after GracefulStop (nil) or on failure, and the HTTP server returns http.ErrServerClosed after Shutdown. errc is buffered for
 	// both so a sender never blocks. It is never closed; run reads both results before returning.

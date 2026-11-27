@@ -20,6 +20,7 @@ const callTimeout = 10 * time.Second
 
 type options struct {
 	seeds string
+	node  string
 	r, w  int
 	ctx   string
 }
@@ -36,6 +37,7 @@ func parse(args []string) (options, []string, error) {
 	var o options
 	fs := flag.NewFlagSet("dynakv-cli", flag.ContinueOnError)
 	fs.StringVar(&o.seeds, "seeds", "localhost:7000", "comma-separated seed node addresses")
+	fs.StringVar(&o.node, "node", "", "send every request to this one node, skipping ring routing")
 	fs.IntVar(&o.r, "r", 0, "read quorum for get; 0 uses the node default")
 	fs.IntVar(&o.w, "w", 0, "write quorum for put and delete; 0 uses the node default")
 	fs.StringVar(&o.ctx, "ctx", "", "base64 context from a previous get, for put and delete")
@@ -64,17 +66,25 @@ func (o options) writeOpts() ([]client.WriteOpt, error) {
 	return opts, nil
 }
 
+// dial connects through the seeds, or to the single -node without ring routing.
+func (o options) dial(ctx context.Context) (*client.Client, error) {
+	if o.node != "" {
+		return client.Dial(ctx, []string{o.node}, client.WithoutRouting())
+	}
+	return client.Dial(ctx, strings.Split(o.seeds, ","))
+}
+
 func run(args []string, stdin io.Reader, out io.Writer) error {
 	o, pos, err := parse(args)
 	if err != nil {
 		return err
 	}
 	if len(pos) == 0 {
-		return errors.New("usage: dynakv-cli [-seeds host:port] [-r N] [-w N] [-ctx base64] put <key> <value|-> | get <key> | delete <key> | owners <key> | status")
+		return errors.New("usage: dynakv-cli [-seeds host:port] [-node host:port] [-r N] [-w N] [-ctx base64] put <key> <value|-> | get <key> | delete <key> | owners <key> | status")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
 	defer cancel()
-	c, err := client.Dial(ctx, strings.Split(o.seeds, ","))
+	c, err := o.dial(ctx)
 	if err != nil {
 		return err
 	}

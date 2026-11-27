@@ -112,6 +112,13 @@ func (m *Membership) Members() []Member {
 	return out
 }
 
+// Alive reports whether gossip currently considers id alive.
+func (m *Membership) Alive(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.members[id].Alive
+}
+
 // Ring returns the current ring. It is immutable and safe to use after later membership changes.
 func (m *Membership) Ring() *ring.Ring { return m.current.Load() }
 

@@ -12,6 +12,7 @@ import (
 type Cluster interface {
 	Members() []membership.Member
 	Ring() *ring.Ring
+	Alive(id string) bool
 }
 
 // Ring implements the Ring gRPC service: cluster status and key placement.

@@ -87,6 +87,9 @@ func validate(key, value []byte, quorum int32) error {
 
 // toStatus maps coordinator errors to the gRPC codes of the API.
 func toStatus(err error) error {
+	if s, ok := status.FromError(err); ok {
+		return s.Err() // already a status, for example from a forwarded request
+	}
 	switch {
 	case errors.Is(err, coordinator.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())

@@ -8,6 +8,13 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
+// Defaults shared by nodes and clients; a client that routes with other values only loses the shortcut, because nodes forward
+// requests they do not own.
+const (
+	DefaultVnodes   = 256
+	DefaultReplicas = 3
+)
+
 // Node is a cluster member that can own keys.
 type Node struct {
 	// ID is the unique node name; it seeds the node's virtual node positions.
